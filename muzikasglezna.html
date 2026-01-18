@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+<meta charset="UTF-8">
+<title>Mūzikas glezna</title>
+<style>
+html,body{margin:0;background:#070707;overflow:hidden}
+#controls{
+ position:fixed;top:10px;left:10px;
+ background:rgba(0,0,0,.5);
+ padding:10px;border-radius:8px;z-index:10
+}
+canvas{display:block}
+</style>
+</head>
+<body>
+
+<div id="controls">
+<input type="file" id="audioFile" accept="audio/*"><br>
+<button id="mic">Mikrofons</button>
+<button id="stop">Stop</button>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+const c=document.getElementById("c"),ctx=c.getContext("2d");
+resize();window.onresize=resize;
+function resize(){c.width=innerWidth;c.height=innerHeight}
+
+let ac,an,src,data,len,anim;
+let prevEnergy=0,energyHist=[];
+
+/* ===== AUDIO ===== */
+audioFile.onchange=e=>{
+ stop();const r=new FileReader();
+ r.onload=ev=>init(ev.target.result);
+ r.readAsArrayBuffer(e.target.files[0]);
+};
+mic.onclick=async()=>{
+ stop();const s=await navigator.mediaDevices.getUserMedia({audio:true});
+ init(s,true);
+};
+stop.onclick=stop;
+
+function stop(){
+ cancelAnimationFrame(anim);
+ if(src?.stop)src.stop();
+ if(src?.mediaStream)src.mediaStream.getTracks().forEach(t=>t.stop());
+}
+
+async function init(input,m=false){
+ ac=new AudioContext();
+ an=ac.createAnalyser();
+ an.fftSize=1024;
+ len=an.frequencyBinCount;
+ data=new Uint8Array(len);
+
+ if(m)src=ac.createMediaStreamSource(input);
+ else{
+  const b=await ac.decodeAudioData(input);
+  src=ac.createBufferSource();
+  src.buffer=b;src.loop=true;src.start();
+ }
+ src.connect(an);an.connect(ac.destination);
+ draw();
+}
+
+/* ===== SOUND ===== */
+function sound(){
+ an.getByteFrequencyData(data);
+ let sub=0,mid=0,high=0,energy=0;
+
+ for(let i=0;i<len;i++){
+  const v=data[i];
+  energy+=v;
+  if(i<len*0.1)sub+=v;
+  else if(i<len*0.45)mid+=v;
+  else high+=v;
+ }
+ energy/=len;sub/=len*0.1;mid/=len*0.35;high/=len*0.55;
+ sub/=255;mid/=255;high/=255;energy/=255;
+
+ const beat=energy-prevEnergy>0.12;
+ prevEnergy=energy;
+
+ energyHist.push(energy);
+ if(energyHist.length>40)energyHist.shift();
+ const chaos=Math.max(...energyHist)-Math.min(...energyHist);
+
+ const balanced=Math.abs(sub-mid)+Math.abs(mid-high)<0.3;
+
+ return{energy,sub,mid,high,beat,chaos,balanced,silence:energy<0.03};
+}
+
+/* ===== VISUAL OBJECTS ===== */
+const ripples=[],bursts=[],symmetry=[];
+
+/* ===== DRAWERS ===== */
+function bg(s){
+ ctx.fillStyle=`rgba(0,0,0,${s.silence?0.3:0.15})`;
+ ctx.fillRect(0,0,c.width,c.height);
+}
+
+/* Sub-bass → radiāli viļņi */
+function spawnRipple(s){
+ if(s.sub>0.3){
+  ripples.push({
+   x:Math.random()*c.width,
+   y:Math.random()*c.height,
+   r:0,alpha:s.sub
+  });
+ }
+}
+function drawRipples(){
+ for(let i=ripples.length-1;i>=0;i--){
+  const r=ripples[i];
+  r.r+=2;r.alpha-=0.005;
+  ctx.strokeStyle=`rgba(255,120,80,${r.alpha})`;
+  ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.arc(r.x,r.y,r.r,0,Math.PI*2);
+  ctx.stroke();
+  if(r.alpha<=0)ripples.splice(i,1);
+ }
+}
+
+/* Beats → komiksa akcenti */
+function spawnBurst(s){
+ if(s.beat){
+  bursts.push({
+   x:Math.random()*c.width,
+   y:Math.random()*c.height,
+   size:20,alpha:1
+  });
+ }
+}
+function drawBursts(){
+ for(let i=bursts.length-1;i>=0;i--){
+  const b=bursts[i];
+  b.size+=4;b.alpha-=0.05;
+  ctx.strokeStyle=`rgba(255,255,0,${b.alpha})`;
+  ctx.strokeRect(b.x-b.size/2,b.y-b.size/2,b.size,b.size);
+  if(b.alpha<=0)bursts.splice(i,1);
+ }
+}
+
+/* Highs → daļiņas visā laukā */
+function particles(s){
+ if(s.high<0.2)return;
+ for(let i=0;i<300*s.high;i++){
+  ctx.fillStyle=`rgba(200,220,255,${s.high})`;
+  ctx.fillRect(Math.random()*c.width,Math.random()*c.height,2,2);
+ }
+}
+
+/* Harmonic → daudzslāņu viļņi */
+function waves(s){
+ if(s.chaos>0.1||s.silence)return;
+ for(let i=0;i<5;i++){
+  ctx.beginPath();
+  ctx.strokeStyle=`rgba(100,200,255,0.3)`;
+  for(let x=0;x<c.width;x+=20){
+   const y=(c.height/6)*i+
+    Math.sin(x*0.02+performance.now()*0.002+i)*80*s.energy;
+   ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+ }
+}
+
+/* Chaos → tintes migla */
+function ink(s){
+ if(s.chaos<0.15)return;
+ ctx.fillStyle=`rgba(0,0,0,0.08)`;
+ ctx.beginPath();
+ ctx.arc(
+  Math.random()*c.width,
+  Math.random()*c.height,
+  400*s.chaos,0,Math.PI*2
+ );
+ ctx.fill();
+}
+
+/* Balanced → simetriski raksti */
+function spawnSymmetry(s){
+ if(s.balanced){
+  symmetry.push({
+   x:c.width/2,y:c.height/2,r:20,alpha:0.5
+  });
+ }
+}
+function drawSymmetry(){
+ for(let i=symmetry.length-1;i>=0;i--){
+  const g=symmetry[i];
+  g.r+=1;g.alpha-=0.003;
+  ctx.strokeStyle=`rgba(150,255,150,${g.alpha})`;
+  ctx.beginPath();
+  ctx.rect(g.x-g.r,g.y-g.r,g.r*2,g.r*2);
+  ctx.stroke();
+  if(g.alpha<=0)symmetry.splice(i,1);
+ }
+}
+
+/* ===== LOOP ===== */
+function draw(){
+ anim=requestAnimationFrame(draw);
+ const s=sound();
+
+ bg(s);
+ spawnRipple(s);
+ spawnBurst(s);
+ spawnSymmetry(s);
+
+ drawRipples();
+ drawBursts();
+ particles(s);
+ waves(s);
+ ink(s);
+ drawSymmetry();
+}
+</script>
+</body>
+</html>
